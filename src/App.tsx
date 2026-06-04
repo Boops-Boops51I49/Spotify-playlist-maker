@@ -15,7 +15,6 @@ const SCOPES = [
 
 // For local Vite development, uncomment the next line and delete the string version:
 const CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID;
-// const CLIENT_ID = (import.meta as any)?.env?.VITE_SPOTIFY_CLIENT_ID || '';
 
 // --- PKCE Auth Helpers ---
 const generateRandomString = (length: number) => {
@@ -343,17 +342,7 @@ export default function App() {
         <div className="max-w-md w-full text-center bg-neutral-800 p-8 rounded-2xl shadow-xl border border-neutral-700">
           <Music className="w-16 h-16 text-green-500 mx-auto mb-4" />
           <h1 className="text-3xl font-bold mb-2">Playlist Builder</h1>
-          <p className="text-neutral-400 mb-6">Select songs and curate your perfect playlists effortlessly.</p>
-          
-          <div className="bg-neutral-900 p-4 rounded-lg text-left mb-8 border border-neutral-700 text-sm">
-             <p className="font-semibold text-yellow-500 mb-2 flex items-center gap-2">
-               <AlertCircle className="w-4 h-4" /> Redirect URI Check
-             </p>
-             <p className="text-neutral-300 mb-2">To prevent login errors, ensure this exact URL is saved in your Spotify Developer Dashboard under <strong>Redirect URIs</strong>:</p>
-             <code className="block bg-black p-3 rounded text-green-400 text-center select-all font-mono text-base border border-neutral-800">
-               {window.location.origin}
-             </code>
-          </div>
+          <p className="text-neutral-400 mb-8">Select songs and curate your perfect playlists effortlessly.</p>
 
           <button 
             onClick={handleLogin}
