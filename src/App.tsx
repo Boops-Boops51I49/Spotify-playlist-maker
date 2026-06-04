@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Music, Search, Heart, Plus, LogOut, CheckSquare, 
-  Square, Settings, AlertCircle, Loader2, Check 
+  Square, AlertCircle, Loader2, Check, X 
 } from 'lucide-react';
 
 // --- Spotify API Configuration & Constants ---
@@ -12,6 +12,10 @@ const SCOPES = [
   'playlist-modify-public',
   'playlist-modify-private'
 ].join(' ');
+
+// For local Vite development, uncomment the next line and delete the string version:
+const CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID;
+// const CLIENT_ID = (import.meta as any)?.env?.VITE_SPOTIFY_CLIENT_ID || '';
 
 // --- PKCE Auth Helpers ---
 const generateRandomString = (length: number) => {
@@ -35,7 +39,6 @@ const base64encode = (input: ArrayBuffer) => {
 
 export default function App() {
   // App State
-  const [clientId, setClientId] = useState(localStorage.getItem('spotify_client_id') || '');
   const [token, setToken] = useState(localStorage.getItem('spotify_access_token') || '');
   const [user, setUser] = useState<any>(null);
   
@@ -49,10 +52,15 @@ export default function App() {
   // Data State
   const [songs, setSongs] = useState<any[]>([]);
   const [playlists, setPlaylists] = useState<any[]>([]);
-  const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
+  // We now store a dictionary of the full track objects, keyed by their URI
+  const [selectedTracks, setSelectedTracks] = useState<Record<string, any>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [newPlaylistName, setNewPlaylistName] = useState('');
-  const [nextUrl, setNextUrl] = useState<string | null>(null); // Track pagination
+  const [nextUrl, setNextUrl] = useState<string | null>(null);
+
+  // Derived state for selected tracks
+  const selectedCount = Object.keys(selectedTracks).length;
+  const selectedArray = Object.values(selectedTracks);
 
   // Prevent double-fetching in React Strict Mode
   const hasFetchedToken = useRef(false);
@@ -62,31 +70,34 @@ export default function App() {
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get('code');
 
-    // If we have a code in the URL, we just returned from Spotify login
     if (code && !hasFetchedToken.current) {
       hasFetchedToken.current = true;
       exchangeToken(code);
     } else if (token) {
-      // If we already have a token, load data
       fetchUserProfile();
       fetchPlaylists();
       if (view === 'liked') fetchLikedSongs();
     }
-  }, [token, view]); // Re-fetch songs if view changes
+  }, [token, view]);
 
-  // Clear notifications after 3 seconds
+  // Clear notifications after 5 seconds
   useEffect(() => {
     if (error || successMsg) {
       const timer = setTimeout(() => {
         setError(null);
         setSuccessMsg('');
-      }, 3000);
+      }, 5000);
       return () => clearTimeout(timer);
     }
   }, [error, successMsg]);
 
   // --- Authentication Methods ---
   const handleLogin = async () => {
+    if (!CLIENT_ID) {
+      setError("Missing Client ID: Please ensure VITE_SPOTIFY_CLIENT_ID is in your .env file and RESTART your terminal server (npm run dev).");
+      return;
+    }
+
     const codeVerifier = generateRandomString(64);
     window.localStorage.setItem('code_verifier', codeVerifier);
     
@@ -95,12 +106,10 @@ export default function App() {
 
     const redirectUri = window.location.origin;
     const authUrl = new URL("https://accounts.spotify.com/authorize");
-    
-    window.localStorage.setItem('spotify_client_id', clientId);
 
     authUrl.search = new URLSearchParams({
       response_type: 'code',
-      client_id: clientId,
+      client_id: CLIENT_ID,
       scope: SCOPES,
       code_challenge_method: 'S256',
       code_challenge: codeChallenge,
@@ -119,7 +128,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          client_id: clientId,
+          client_id: CLIENT_ID,
           grant_type: 'authorization_code',
           code: code,
           redirect_uri: redirectUri,
@@ -133,7 +142,6 @@ export default function App() {
       localStorage.setItem('spotify_access_token', data.access_token);
       setToken(data.access_token);
       
-      // Clean up URL
       window.history.replaceState({}, document.title, window.location.pathname);
     } catch (err: any) {
       setError(err.message);
@@ -194,11 +202,11 @@ export default function App() {
 
   const fetchLikedSongs = async () => {
     setIsLoading(true);
-    setNextUrl(null); // Reset pagination
+    setNextUrl(null);
     try {
       const data = await apiCall('/me/tracks?limit=50');
       setSongs(data.items.map((item: any) => item.track));
-      setNextUrl(data.next); // Save the URL for the next 50 songs
+      setNextUrl(data.next);
     } catch (e) {
     } finally {
       setIsLoading(false);
@@ -210,11 +218,11 @@ export default function App() {
     if (!searchQuery.trim()) return;
     
     setIsLoading(true);
-    setNextUrl(null); // Reset pagination
+    setNextUrl(null);
     try {
       const data = await apiCall(`/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=50`);
       setSongs(data.tracks.items);
-      setNextUrl(data.tracks.next); // Save the URL for the next 50 search results
+      setNextUrl(data.tracks.next);
     } catch (e) {
     } finally {
       setIsLoading(false);
@@ -225,11 +233,9 @@ export default function App() {
     if (!nextUrl) return;
     setIsFetchingMore(true);
     try {
-      // The 'nextUrl' from Spotify is the full URL, we just need the endpoint part
       const endpoint = nextUrl.replace(SPOTIFY_API_BASE, '');
       const data = await apiCall(endpoint);
       
-      // Append the new songs to our existing list based on the current view
       if (view === 'liked') {
         setSongs(prev => [...prev, ...data.items.map((item: any) => item.track)]);
         setNextUrl(data.next);
@@ -245,7 +251,7 @@ export default function App() {
 
   const handleCreateAndAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPlaylistName.trim() || selectedUris.size === 0 || !user) return;
+    if (!newPlaylistName.trim() || selectedCount === 0 || !user) return;
     
     setIsLoading(true);
     try {
@@ -256,12 +262,12 @@ export default function App() {
 
       await apiCall(`/playlists/${playlistData.id}/tracks`, {
         method: 'POST',
-        body: JSON.stringify({ uris: Array.from(selectedUris) })
+        body: JSON.stringify({ uris: Object.keys(selectedTracks) })
       });
 
-      setSuccessMsg(`Created "${newPlaylistName}" and added ${selectedUris.size} songs!`);
+      setSuccessMsg(`Created "${newPlaylistName}" and added ${selectedCount} songs!`);
       setNewPlaylistName('');
-      setSelectedUris(new Set());
+      setSelectedTracks({});
       fetchPlaylists(); 
     } catch (e) {
     } finally {
@@ -270,17 +276,17 @@ export default function App() {
   };
 
   const handleAddToExisting = async (playlistId: string, playlistName: string) => {
-    if (selectedUris.size === 0) return;
+    if (selectedCount === 0) return;
     
     setIsLoading(true);
     try {
       await apiCall(`/playlists/${playlistId}/tracks`, {
         method: 'POST',
-        body: JSON.stringify({ uris: Array.from(selectedUris) })
+        body: JSON.stringify({ uris: Object.keys(selectedTracks) })
       });
       
-      setSuccessMsg(`Added ${selectedUris.size} songs to "${playlistName}"!`);
-      setSelectedUris(new Set());
+      setSuccessMsg(`Added ${selectedCount} songs to "${playlistName}"!`);
+      setSelectedTracks({});
     } catch (e) {
     } finally {
       setIsLoading(false);
@@ -288,86 +294,72 @@ export default function App() {
   };
 
   // --- Handlers ---
-  const saveClientId = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const id = formData.get('clientId') as string;
-    if (id) {
-      localStorage.setItem('spotify_client_id', id);
-      setClientId(id);
-    }
-  };
-
-  const toggleSongSelection = (uri: string) => {
-    const next = new Set(selectedUris);
-    if (next.has(uri)) {
-      next.delete(uri);
-    } else {
-      next.add(uri);
-    }
-    setSelectedUris(next);
+  const toggleSongSelection = (song: any) => {
+    setSelectedTracks(prev => {
+      const next = { ...prev };
+      if (next[song.uri]) {
+        delete next[song.uri];
+      } else {
+        next[song.uri] = song;
+      }
+      return next;
+    });
   };
 
   const toggleSelectAll = () => {
-    if (selectedUris.size === songs.length) {
-      setSelectedUris(new Set());
-    } else {
-      setSelectedUris(new Set(songs.map(s => s.uri)));
-    }
+    // Check if every song currently visible is already selected
+    const currentUris = songs.filter(s => s).map(s => s.uri);
+    const allSelected = currentUris.every(uri => selectedTracks[uri]);
+
+    setSelectedTracks(prev => {
+      const next = { ...prev };
+      if (allSelected) {
+        // Unselect all currently visible songs
+        currentUris.forEach(uri => delete next[uri]);
+      } else {
+        // Select all currently visible songs
+        songs.forEach(song => {
+          if (song) next[song.uri] = song;
+        });
+      }
+      return next;
+    });
   };
 
   // --- Render Helpers ---
-  if (!clientId) {
-    return (
-      <div className="min-h-screen bg-neutral-900 text-white flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-neutral-800 rounded-xl p-8 shadow-2xl border border-neutral-700">
-          <div className="flex items-center gap-3 mb-6">
-            <Settings className="w-8 h-8 text-green-500" />
-            <h1 className="text-2xl font-bold">App Setup</h1>
-          </div>
-          <p className="text-neutral-400 mb-6 text-sm">
-            To connect to Spotify, this app needs a Client ID. 
-            <br/><br/>
-            1. Go to your <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer" className="text-green-400 hover:underline">Spotify Developer Dashboard</a>.<br/>
-            2. Add this exact Redirect URI to your app settings: <br/>
-            <code className="bg-neutral-900 p-1 rounded text-xs break-all block mt-1">{window.location.origin}</code><br/>
-            3. Copy the Client ID and paste it below.
-          </p>
-          <form onSubmit={saveClientId} className="flex flex-col gap-4">
-            <input 
-              name="clientId"
-              type="text" 
-              placeholder="Enter Spotify Client ID" 
-              className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-3 text-white focus:border-green-500 focus:outline-none transition-colors"
-              required
-            />
-            <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-black font-bold py-3 px-4 rounded-lg transition-colors">
-              Save & Continue
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
   if (!token) {
     return (
       <div className="min-h-screen bg-neutral-900 text-white flex items-center justify-center p-4">
-        <div className="max-w-sm w-full text-center">
-          <Music className="w-20 h-20 text-green-500 mx-auto mb-6" />
+        {/* Notifications */}
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-full max-w-md px-4 pointer-events-none">
+          {error && (
+            <div className="bg-red-500/90 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 backdrop-blur-sm">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span className="text-sm font-medium">{error}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="max-w-md w-full text-center bg-neutral-800 p-8 rounded-2xl shadow-xl border border-neutral-700">
+          <Music className="w-16 h-16 text-green-500 mx-auto mb-4" />
           <h1 className="text-3xl font-bold mb-2">Playlist Builder</h1>
-          <p className="text-neutral-400 mb-8">Select songs and curate your perfect playlists effortlessly.</p>
+          <p className="text-neutral-400 mb-6">Select songs and curate your perfect playlists effortlessly.</p>
+          
+          <div className="bg-neutral-900 p-4 rounded-lg text-left mb-8 border border-neutral-700 text-sm">
+             <p className="font-semibold text-yellow-500 mb-2 flex items-center gap-2">
+               <AlertCircle className="w-4 h-4" /> Redirect URI Check
+             </p>
+             <p className="text-neutral-300 mb-2">To prevent login errors, ensure this exact URL is saved in your Spotify Developer Dashboard under <strong>Redirect URIs</strong>:</p>
+             <code className="block bg-black p-3 rounded text-green-400 text-center select-all font-mono text-base border border-neutral-800">
+               {window.location.origin}
+             </code>
+          </div>
+
           <button 
             onClick={handleLogin}
             className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-black font-bold py-4 px-6 rounded-full transition-transform hover:scale-105 active:scale-95"
           >
             Log in with Spotify
-          </button>
-          <button 
-            onClick={() => { setClientId(''); localStorage.removeItem('spotify_client_id'); }}
-            className="mt-6 text-sm text-neutral-500 hover:text-white transition-colors"
-          >
-            Change Client ID
           </button>
         </div>
       </div>
@@ -376,7 +368,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-200 font-sans flex flex-col">
-      {/* Notifications */}
+      {/* Notifications for Main Screen */}
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-full max-w-md px-4 pointer-events-none">
         {error && (
           <div className="bg-red-500/90 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 backdrop-blur-sm">
@@ -432,7 +424,7 @@ export default function App() {
           <div className="p-6 border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-30">
             <div className="flex gap-4 mb-6">
               <button 
-                onClick={() => { setView('liked'); setSelectedUris(new Set()); }}
+                onClick={() => setView('liked')}
                 className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold transition-all ${
                   view === 'liked' ? 'bg-green-500 text-black shadow-lg shadow-green-500/20' : 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800 hover:text-white'
                 }`}
@@ -441,7 +433,7 @@ export default function App() {
                 Liked Songs
               </button>
               <button 
-                onClick={() => { setView('search'); setSelectedUris(new Set()); }}
+                onClick={() => setView('search')}
                 className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold transition-all ${
                   view === 'search' ? 'bg-green-500 text-black shadow-lg shadow-green-500/20' : 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800 hover:text-white'
                 }`}
@@ -472,7 +464,7 @@ export default function App() {
               onClick={toggleSelectAll}
               className="flex items-center gap-2 text-sm font-medium text-neutral-300 hover:text-white transition-colors"
             >
-              {songs.length > 0 && selectedUris.size === songs.length ? (
+              {songs.length > 0 && songs.filter(s => s).every(s => selectedTracks[s.uri]) ? (
                 <CheckSquare className="w-5 h-5 text-green-500" />
               ) : (
                 <Square className="w-5 h-5 text-neutral-500" />
@@ -495,12 +487,12 @@ export default function App() {
             ) : (
               <>
                 {songs.map((song, index) => {
-                  if (!song) return null; // Safety check
-                  const isSelected = selectedUris.has(song.uri);
+                  if (!song) return null;
+                  const isSelected = !!selectedTracks[song.uri];
                   return (
                     <div 
                       key={`${song.id}-${index}`} 
-                      onClick={() => toggleSongSelection(song.uri)}
+                      onClick={() => toggleSongSelection(song)}
                       className={`flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-colors group ${
                         isSelected ? 'bg-neutral-800' : 'hover:bg-neutral-800/50'
                       }`}
@@ -560,16 +552,46 @@ export default function App() {
         {/* Right Pane: Playlist Actions */}
         <div className="w-full lg:w-96 bg-neutral-900 flex flex-col shadow-[-10px_0_30px_rgba(0,0,0,0.5)] z-20">
           
-          <div className="p-6 bg-green-900/20 border-b border-green-900/30">
-            <h2 className="text-xl font-bold text-white mb-2">Selection</h2>
-            <div className="text-4xl font-black text-green-500 mb-1">{selectedUris.size}</div>
-            <p className="text-sm text-green-400/80 font-medium uppercase tracking-wider">Tracks Selected</p>
+          <div className="p-6 bg-green-900/20 border-b border-green-900/30 flex flex-col">
+            <div>
+              <h2 className="text-xl font-bold text-white mb-2">Selection</h2>
+              <div className="text-4xl font-black text-green-500 mb-1">{selectedCount}</div>
+              <p className="text-sm text-green-400/80 font-medium uppercase tracking-wider">Tracks Selected</p>
+            </div>
+            
+            {/* NEW: Scrollable Selected Tracks List */}
+            {selectedCount > 0 && (
+              <div className="mt-6 max-h-60 overflow-y-auto space-y-2 pr-2 -mr-2 scrollbar-thin scrollbar-thumb-green-900/50">
+                {selectedArray.map(track => (
+                  <div key={track.uri} className="flex items-center gap-3 bg-neutral-950/50 p-2 rounded-lg group">
+                    {track.album?.images?.[2] ? (
+                      <img src={track.album.images[2].url} alt="" className="w-8 h-8 rounded object-cover" />
+                    ) : (
+                      <div className="w-8 h-8 rounded bg-neutral-800 flex items-center justify-center shrink-0">
+                        <Music className="w-3 h-3 text-neutral-500" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{track.name}</p>
+                      <p className="text-xs text-neutral-400 truncate">{track.artists?.[0]?.name}</p>
+                    </div>
+                    <button 
+                      onClick={() => toggleSongSelection(track)} 
+                      className="p-1.5 text-neutral-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors"
+                      title="Remove from selection"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-8 relative">
             
             {/* Loading Overlay for Actions */}
-            {isLoading && selectedUris.size > 0 && (
+            {isLoading && selectedCount > 0 && (
               <div className="absolute inset-0 bg-neutral-900/50 backdrop-blur-sm flex items-center justify-center z-10 rounded-xl m-4">
                 <Loader2 className="w-10 h-10 text-green-500 animate-spin" />
               </div>
@@ -590,7 +612,7 @@ export default function App() {
                 />
                 <button 
                   type="submit"
-                  disabled={selectedUris.size === 0 || !newPlaylistName.trim() || isLoading}
+                  disabled={selectedCount === 0 || !newPlaylistName.trim() || isLoading}
                   className="w-full bg-white hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500 text-black font-bold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2"
                 >
                   Create & Add
@@ -614,7 +636,7 @@ export default function App() {
                     <button
                       key={playlist.id}
                       onClick={() => handleAddToExisting(playlist.id, playlist.name)}
-                      disabled={selectedUris.size === 0 || isLoading}
+                      disabled={selectedCount === 0 || isLoading}
                       className="flex items-center gap-3 p-3 rounded-xl hover:bg-neutral-800 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
                     >
                       {playlist.images?.[0] ? (
